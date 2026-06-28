@@ -80,7 +80,7 @@ function msgTesteAprovado(d) {
 `  User: ${u} | Senha: ${p}\n` +
 "▪ UNI TV (Android)\n" +
 "  Downloader: 9387398\n" +
-"BlackBr ®️"
+"LIBEROU TV ®️"
   );
 }
 

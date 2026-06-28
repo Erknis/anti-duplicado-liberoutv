@@ -88,6 +88,8 @@ fs.mkdirSync(DATA_DIR, { recursive: true });
 if (!fs.existsSync(DB_FILE)) fs.writeFileSync(DB_FILE, "telefone,data_iso\n");
 
 const registro = new Map();
+function soDigitos(v) { return String(v == null ? "" : v).replace(/\D/g, ""); }
+
 (function carregar() {
   const linhas = fs.readFileSync(DB_FILE, "utf8").split("\n");
   for (const ln of linhas) {
@@ -97,8 +99,6 @@ const registro = new Map();
   }
   console.log(`[init] ${registro.size} numeros carregados.`);
 })();
-
-function soDigitos(v) { return String(v == null ? "" : v).replace(/\D/g, ""); }
 
 function jaBloqueado(telefone) {
   if (!registro.has(telefone)) return false;
@@ -168,6 +168,135 @@ function extrairTelefone(req) {
   return soDigitos(t);
 }
 
+const DASHBOARD_HTML = `<!doctype html>
+<html lang="pt-br"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Liberou TV — Painel de Testes</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+body{background:#0f1117;color:#e7e9ee;min-height:100vh}
+.wrap{max-width:980px;margin:0 auto;padding:20px}
+h1{font-size:22px;display:flex;align-items:center;gap:10px;margin-bottom:4px}
+.sub{color:#8b90a0;font-size:13px;margin-bottom:20px}
+.card{background:#171a23;border:1px solid #242938;border-radius:14px;padding:18px}
+.login{max-width:380px;margin:60px auto}
+.login input{width:100%;padding:12px 14px;border-radius:10px;border:1px solid #2c3142;background:#0f1117;color:#fff;font-size:15px;margin:10px 0}
+button{cursor:pointer;border:none;border-radius:10px;font-size:14px;font-weight:600;padding:11px 16px}
+.btn{background:#3b82f6;color:#fff;width:100%}
+.btn:hover{background:#2f6fd6}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:18px}
+.stat{background:#171a23;border:1px solid #242938;border-radius:12px;padding:14px}
+.stat .n{font-size:26px;font-weight:700}
+.stat .l{color:#8b90a0;font-size:12px;margin-top:2px}
+.toolbar{display:flex;gap:10px;margin-bottom:14px;flex-wrap:wrap}
+.toolbar input{flex:1;min-width:160px;padding:10px 12px;border-radius:10px;border:1px solid #2c3142;background:#0f1117;color:#fff}
+.mini{padding:9px 12px;font-size:13px}
+.gray{background:#2c3142;color:#e7e9ee}.gray:hover{background:#363c50}
+.red{background:#ef4444;color:#fff}.red:hover{background:#d83a3a}
+.green{background:#22c55e;color:#04210f}
+table{width:100%;border-collapse:collapse}
+th,td{text-align:left;padding:11px 10px;border-bottom:1px solid #242938;font-size:14px}
+th{color:#8b90a0;font-weight:600;font-size:12px;text-transform:uppercase}
+td.num{font-variant-numeric:tabular-nums;font-weight:600}
+.act{display:flex;gap:6px}
+.act a,.act button{font-size:12px;padding:6px 10px;border-radius:8px;text-decoration:none}
+.wa{background:#0b3b2e;color:#34d399;display:inline-flex;align-items:center}
+.empty{text-align:center;color:#8b90a0;padding:30px}
+.err{color:#f87171;font-size:13px;margin-top:6px;min-height:16px}
+.foot{color:#5b6072;font-size:12px;text-align:center;margin-top:20px}
+@media(max-width:560px){.stats{grid-template-columns:1fr 1fr}.hide-sm{display:none}}
+</style></head><body>
+<div class="wrap">
+  <div id="login" class="login card">
+    <h1>📺 Liberou TV</h1>
+    <div class="sub">Painel de Testes — acesso restrito</div>
+    <input id="tk" type="password" placeholder="Digite seu token de acesso" />
+    <button class="btn" onclick="entrar()">Entrar</button>
+    <div id="loginerr" class="err"></div>
+  </div>
+
+  <div id="app" style="display:none">
+    <h1>📺 Liberou TV <span style="font-size:13px;color:#8b90a0;font-weight:400">/ Painel de Testes</span></h1>
+    <div class="sub">Números que já geraram teste grátis</div>
+    <div class="stats">
+      <div class="stat"><div class="n" id="s-total">0</div><div class="l">Total cadastrados</div></div>
+      <div class="stat"><div class="n" id="s-hoje">0</div><div class="l">Testaram hoje</div></div>
+      <div class="stat"><div class="n" id="s-bloq">—</div><div class="l">Bloqueio</div></div>
+    </div>
+    <div class="card">
+      <div class="toolbar">
+        <input id="busca" placeholder="🔎 Buscar número..." oninput="render()" />
+        <button class="mini gray" onclick="carregar()">↻ Atualizar</button>
+        <button class="mini gray" onclick="baixarCSV()">⬇ CSV</button>
+        <button class="mini red" onclick="limparTudo()">Liberar todos</button>
+      </div>
+      <div id="tabela"></div>
+    </div>
+    <div class="foot">Liberou TV · sair fechando a aba</div>
+  </div>
+</div>
+<script>
+var TK="", DADOS=[];
+function q(s){return encodeURIComponent(s)}
+function entrar(){
+  TK=document.getElementById("tk").value.trim();
+  if(!TK){return}
+  fetch("/api/numeros?token="+q(TK)).then(function(r){
+    if(r.status===401){document.getElementById("loginerr").textContent="Token inválido.";return null}
+    return r.json();
+  }).then(function(j){
+    if(!j)return;
+    sessionStorage.setItem("tk",TK);
+    document.getElementById("login").style.display="none";
+    document.getElementById("app").style.display="block";
+    aplicar(j);
+  }).catch(function(){document.getElementById("loginerr").textContent="Erro de conexão."});
+}
+function carregar(){
+  fetch("/api/numeros?token="+q(TK)).then(function(r){return r.json()}).then(aplicar);
+}
+function aplicar(j){
+  DADOS=j.lista||[];
+  document.getElementById("s-total").textContent=j.total||0;
+  document.getElementById("s-bloq").textContent=j.dedupDays>0?(j.dedupDays+" dias"):"Permanente";
+  var hoje=new Date().toDateString();
+  document.getElementById("s-hoje").textContent=DADOS.filter(function(x){return new Date(x.data).toDateString()===hoje}).length;
+  render();
+}
+function fmt(ts){var d=new Date(ts);return d.toLocaleString("pt-BR")}
+function render(){
+  var f=(document.getElementById("busca").value||"").replace(/\\D/g,"");
+  var lista=DADOS.filter(function(x){return !f||x.telefone.indexOf(f)>=0});
+  if(!lista.length){document.getElementById("tabela").innerHTML='<div class="empty">Nenhum número encontrado.</div>';return}
+  var h='<table><thead><tr><th>#</th><th>Número</th><th class="hide-sm">Data</th><th>Ações</th></tr></thead><tbody>';
+  lista.forEach(function(x,i){
+    h+='<tr><td>'+(i+1)+'</td><td class="num">'+x.telefone+'</td><td class="hide-sm">'+fmt(x.data)+'</td>'+
+       '<td><div class="act">'+
+       '<a class="wa" target="_blank" href="https://wa.me/'+x.telefone+'">WhatsApp</a>'+
+       '<button class="red" onclick="apagar(\\''+x.telefone+'\\')">Apagar</button>'+
+       '</div></td></tr>';
+  });
+  h+='</tbody></table>';
+  document.getElementById("tabela").innerHTML=h;
+}
+function apagar(tel){
+  if(!confirm("Liberar o número "+tel+" para gerar teste de novo?"))return;
+  fetch("/apagar?token="+q(TK)+"&telefone="+q(tel)).then(function(){carregar()});
+}
+function limparTudo(){
+  if(!confirm("ATENÇÃO: isso libera TODOS os números (todos poderão testar de novo). Continuar?"))return;
+  fetch("/api/limpar?token="+q(TK)).then(function(){carregar()});
+}
+function baixarCSV(){
+  var linhas=["telefone,data"];
+  DADOS.forEach(function(x){linhas.push(x.telefone+","+fmt(x.data))});
+  var blob=new Blob([linhas.join("\\n")],{type:"text/csv"});
+  var a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download="numeros_liberoutv.csv";a.click();
+}
+(function(){var t=sessionStorage.getItem("tk");if(t){document.getElementById("tk").value=t;entrar()}})();
+</script>
+</body></html>`;
+
 const app = express();
 const captureRaw = (req, _res, buf) => { req.rawBody = buf.toString(); };
 app.use(express.json({ verify: captureRaw }));
@@ -224,8 +353,29 @@ app.get("/apagar", (req, res) => {
   texto(res, `Numero ${tel} liberado. OK`);
 });
 
+// ---- endpoints JSON para o painel visual ----
+app.get("/api/numeros", (req, res) => {
+  if (req.query.token !== ADMIN_TOKEN) return res.status(401).json({ error: "token" });
+  const lista = [...registro.entries()]
+    .map(([telefone, data]) => ({ telefone, data }))
+    .sort((a, b) => b.data - a.data);
+  res.json({ total: lista.length, dedupDays: DEDUP_DAYS, lista });
+});
+
+app.get("/api/limpar", (req, res) => {
+  if (req.query.token !== ADMIN_TOKEN) return res.status(401).json({ error: "token" });
+  registro.clear();
+  fs.writeFileSync(DB_FILE, "telefone,data_iso\n");
+  res.json({ ok: true });
+});
+
+// ---- PAINEL VISUAL ----
+app.get("/painel", (_req, res) => {
+  res.set("Content-Type", "text/html; charset=utf-8").send(DASHBOARD_HTML);
+});
+
 app.get("/", (_req, res) =>
-  texto(res, `API anti-duplicado OK\nNumeros: ${registro.size}\nBloqueio: ${DEDUP_DAYS > 0 ? DEDUP_DAYS + " dias" : "permanente"}`)
+  texto(res, `API anti-duplicado OK\nNumeros: ${registro.size}\nBloqueio: ${DEDUP_DAYS > 0 ? DEDUP_DAYS + " dias" : "permanente"}\n\nPainel visual: /painel`)
 );
 
 app.listen(PORT, () => console.log(`[ok] porta ${PORT}`));

@@ -106,7 +106,7 @@ function msgTesteAprovado(d) {
 `  User: ${u} | Senha: ${p}\n` +
 "▪ *UNI TV* (Android)\n" +
 "  Downloader: 9387398\n" +
-"LiberouTV "
+" *LIBEROU TV®️*"
   );
 }
 
@@ -331,6 +331,8 @@ table{width:100%;border-collapse:collapse}
 th,td{text-align:left;padding:11px 10px;border-bottom:1px solid #242938;font-size:14px;vertical-align:top}
 th{color:#8b90a0;font-weight:600;font-size:12px;text-transform:uppercase}
 td.num{font-variant-numeric:tabular-nums;font-weight:600}
+.ha-dias{color:#60a5fa;font-weight:700;font-size:13px}
+.dt-full{color:#8b90a0;font-size:11px;margin-top:2px}
 .cred{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;background:#0f1117;padding:3px 6px;border-radius:6px;display:inline-block;margin:1px 0;cursor:pointer}
 .cred:hover{background:#1f2533}
 .semlogin{color:#5b6072;font-style:italic;font-size:12px}
@@ -482,6 +484,17 @@ function aplicar(j){
   render();
 }
 function fmt(ts){var d=new Date(ts);return d.toLocaleString("pt-BR")}
+function haDias(ts){
+  var diff=Date.now()-ts;
+  if(diff<0)diff=0;
+  var min=Math.floor(diff/60000);
+  var hor=Math.floor(diff/3600000);
+  var dia=Math.floor(diff/86400000);
+  if(dia>=1)return "há "+dia+(dia===1?" dia":" dias");
+  if(hor>=1)return "há "+hor+(hor===1?" hora":" horas");
+  if(min>=1)return "há "+min+(min===1?" minuto":" minutos");
+  return "agora mesmo";
+}
 function copiar(txt){
   navigator.clipboard.writeText(txt).then(function(){
     var n=document.getElementById("toast");if(!n)return;
@@ -493,7 +506,7 @@ function render(){
   var f=(document.getElementById("busca").value||"").replace(/\\D/g,"");
   var lista=DADOS.filter(function(x){return !f||x.telefone.indexOf(f)>=0});
   if(!lista.length){document.getElementById("tabela").innerHTML='<div class="empty">Nenhum número encontrado.</div>';return}
-  var h='<table><thead><tr><th>#</th><th>Número</th><th class="hide-sm">Login / Senha</th><th class="hide-sm">Data</th><th>Ações</th></tr></thead><tbody>';
+  var h='<table><thead><tr><th>#</th><th>Número</th><th class="hide-sm">Login / Senha</th><th class="hide-sm">Bloqueado há</th><th>Ações</th></tr></thead><tbody>';
   lista.forEach(function(x,i){
     var loginHtml;
     if(x.username){
@@ -505,7 +518,7 @@ function render(){
     var ckHtml = x.payUrl?'<a class="ck" target="_blank" href="'+esc(x.payUrl)+'">💳 Checkout</a>':'';
     h+='<tr><td>'+(i+1)+'</td><td class="num">'+esc(x.telefone)+'</td>'+
        '<td class="hide-sm">'+loginHtml+'</td>'+
-       '<td class="hide-sm">'+fmt(x.data)+'</td>'+
+       '<td class="hide-sm"><div class="ha-dias">'+haDias(x.data)+'</div><div class="dt-full">'+fmt(x.data)+'</div></td>'+
        '<td><div class="act">'+
        '<a class="wa" target="_blank" href="https://wa.me/'+esc(x.telefone)+'">WhatsApp</a>'+
        ckHtml+

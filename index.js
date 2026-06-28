@@ -858,34 +858,48 @@ async function handleHumano(req, res) {
 app.post("/humano", handleHumano);
 app.get("/humano", handleHumano);
 
+// ---- busca robusta de cliente (tenta com/sem o 9º dígito do Brasil) ----
+function variantesTelefone(t) {
+  t = soDigitos(t);
+  const set = new Set([t]);
+  const m = t.match(/^(55)(\d{2})(\d+)$/);          // 55 + DDD + número
+  if (m) {
+    const [, pais, ddd, resto] = m;
+    if (resto.length === 9 && resto[0] === "9") set.add(pais + ddd + resto.slice(1)); // tira o 9
+    if (resto.length === 8) set.add(pais + ddd + "9" + resto);                        // põe o 9
+  }
+  return [...set];
+}
+function buscarCliente(telefone) {
+  for (const v of variantesTelefone(telefone)) {
+    if (registro.has(v)) return registro.get(v);
+  }
+  return null;
+}
+
 // ---- endpoint de RENOVAÇÃO ----
-// Busca o número no banco e devolve o link de checkout DELE (renovação com 1 clique).
+// Consulta o cadastro salvo. Se tiver o checkout do cliente -> renova (avisa se venceu).
+// Se não achar (ou não tiver os dados) -> mensagem de "não encontrei".
 async function handleRenovar(req, res) {
   logReq(req, "RENOVACAO");
   const telefone = extrairTelefone(req);
   if (!telefone) return responderBotBot(res, MSG_SEM_NUMERO);
 
-  const dados = registro.get(telefone);
+  const dados = buscarCliente(telefone);
 
-  // Cliente encontrado E com login + checkout salvos -> link DELE
-  if (dados && dados.username && dados.payUrl) {
+  // Achou o cadastro COM o link de checkout salvo -> renova com os dados DELE
+  if (dados && dados.payUrl) {
     const venc = parseVencimento(dados);
     if (venc && Date.now() > venc.getTime()) {
       console.log(`[renovar] ${telefone}: teste VENCIDO em ${dataBR(venc)}`);
       return responderBotBot(res, msgRenovacaoVencido(dados, venc));
     }
-    console.log(`[renovar] ${telefone}: encontrou login + checkout (ativo)`);
+    console.log(`[renovar] ${telefone}: cadastro encontrado (ativo)`);
     return responderBotBot(res, msgRenovacaoComLogin(dados));
   }
 
-  // Cliente existe mas é antigo (sem login salvo) -> link de venda padrão
-  if (dados) {
-    console.log(`[renovar] ${telefone}: cadastro antigo sem checkout, link genérico`);
-    return responderBotBot(res, msgRenovacaoSemCheckout());
-  }
-
-  // Cliente não encontrado -> sugere novo teste ou humano
-  console.log(`[renovar] ${telefone}: não encontrado`);
+  // Não achou (ou achou sem dados de renovação) -> não encontrado
+  console.log(`[renovar] ${telefone}: não encontrado no cadastro`);
   return responderBotBot(res, msgRenovacaoNaoEncontrado());
 }
 app.post("/renovar", handleRenovar);

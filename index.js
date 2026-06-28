@@ -23,6 +23,15 @@ const DATA_DIR    = process.env.DATA_DIR || path.join(__dirname, "data");
 const DB_FILE     = path.join(DATA_DIR, "clientes.json"); // novo formato (rich)
 const DB_FILE_OLD = path.join(DATA_DIR, "clientes.csv");  // formato antigo (migrado)
 const PAUSA_FILE  = path.join(DATA_DIR, "pausas.json");   // estado + histórico de pausas
+const HUMANOS_LOG = path.join(DATA_DIR, "humanos.json");  // log de pedidos de atendimento humano
+
+// ---- BotBot (pra avisar humanos quando cliente pedir) ----
+const BOTBOT_BASE   = process.env.BOTBOT_BASE || "https://botbot.chat";
+const BOTBOT_APPKEY = process.env.BOTBOT_APPKEY || "20978e98-f860-40f7-bbd0-5d66b86afea8";
+const BOTBOT_AUTHKEY= process.env.BOTBOT_AUTHKEY || "2NvnaUg2JqxYiUfYYwpNcoSQNJnWJE4itCVEiFSgeyQz9GX3lw";
+// números que recebem o aviso (separar vários por vírgula)
+const AVISO_HUMANOS = (process.env.AVISO_HUMANOS || "5535998877595,5553991836803")
+  .split(",").map(s => String(s).replace(/\D/g, "")).filter(Boolean);
 
 const MSG_GERANDO =
   "🎉 *Instalação confirmada!*\n\n⏳ Gerando seu TESTE GRÁTIS, aguarde alguns segundos...";
@@ -44,6 +53,56 @@ function msgPausado(motivo) {
     "Em breve voltamos a liberar testes grátis. 🍿\n" +
     "Enquanto isso, digite *HUMANO* para falar com a nossa equipe. 👤"
   );
+}
+
+// ---- mensagem pro CLIENTE quando pede atendimento humano ----
+const MSG_HUMANO_CLIENTE =
+  "👤 *Atendimento humano solicitado!*\n\n" +
+  "Já avisei a nossa equipe. 🙋\n" +
+  "Um operador foi acionado e *logo irá falar com você aqui mesmo*. ⏳\n\n" +
+  "Obrigado pela paciência! 🙏";
+
+// ---- envia aviso pros números humanos via BotBot ----
+// texto do aviso que vai pro(s) número(es) de atendimento
+function msgAvisoHumano(telefoneCliente, nomeCliente, motivo) {
+  let s = "🚨 *PEDIDO DE ATENDIMENTO HUMANO* 🚨\n\n";
+  s += "📞 Cliente: " + telefoneCliente;
+  if (nomeCliente) s += " (" + nomeCliente + ")";
+  s += "\n";
+  if (motivo) s += "📝 Motivo: " + motivo + "\n";
+  s += "\n👉 Falar com o cliente pelo WhatsApp:\n";
+  s += "https://wa.me/" + telefoneCliente;
+  return s;
+}
+
+async function avisarHumanos(telefoneCliente, nomeCliente, motivo) {
+  const texto = msgAvisoHumano(telefoneCliente, nomeCliente, motivo);
+  const resultados = [];
+  for (const num of AVISO_HUMANOS) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 15000);
+    try {
+      const r = await fetch(`${BOTBOT_BASE}/api/v2/sendText`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "appKey": BOTBOT_APPKEY,
+          "authKey": BOTBOT_AUTHKEY,
+        },
+        body: JSON.stringify({ to: num, message: texto }),
+        signal: ctrl.signal,
+      });
+      const body = await r.text();
+      console.log(`[humano] aviso -> ${num} status=${r.status} resp=${(body || "").slice(0, 200)}`);
+      resultados.push({ numero: num, status: r.status, ok: r.status >= 200 && r.status < 300, resp: (body || "").slice(0, 200) });
+    } catch (e) {
+      console.error(`[humano] erro avisando ${num}:`, e.message);
+      resultados.push({ numero: num, status: 0, ok: false, resp: String(e) });
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  return resultados;
 }
 
 // ---- mensagem quando o número JÁ testou (negado) -> leva pra venda ----
@@ -160,6 +219,23 @@ function reativar() {
   salvarPausa();
   console.log("[pausa] REATIVADA — geração de testes voltou ao normal.");
 }
+
+// ===================== LOG DE PEDIDOS HUMANOS =====================
+// [{ quando, telefone, nome, motivo, avisosEnviados, avisosOk }]
+let humanosLog = [];
+(function carregarHumanos() {
+  if (!fs.existsSync(HUMANOS_LOG)) {
+    console.log("[init] log de humanos: vazio.");
+    return;
+  }
+  try {
+    const j = JSON.parse(fs.readFileSync(HUMANOS_LOG, "utf8"));
+    humanosLog = Array.isArray(j) ? j : [];
+    console.log(`[init] log de humanos: ${humanosLog.length} registros.`);
+  } catch (e) { console.error("[init] erro lendo humanos.json:", e.message); }
+})();
+function salvarHumanos() { fs.writeFileSync(HUMANOS_LOG, JSON.stringify(humanosLog, null, 2)); }
+// =================================================================
 // =========================================================
 
 function salvarArquivo() {
@@ -384,6 +460,20 @@ td.num{font-variant-numeric:tabular-nums;font-weight:600}
       <button class="mini gray" onclick="carregarEstado()">↻ Atualizar</button>
     </div>
     <div id="historico" class="card" style="padding:6px 14px"><div class="hist-empty">Carregando...</div></div>
+
+    <!-- PEDIDOS DE ATENDIMENTO HUMANO -->
+    <div class="hist-head">
+      <h2>👤 Pedidos de atendimento humano</h2>
+      <div>
+        <button class="mini gray" onclick="carregarHumanos()">↻ Atualizar</button>
+        <button class="mini red" onclick="limparHumanos()">Limpar</button>
+      </div>
+    </div>
+    <div class="stats" style="margin-bottom:12px">
+      <div class="stat"><div class="n" id="h-total">0</div><div class="l">Total de pedidos</div></div>
+      <div class="stat"><div class="n" id="h-hoje">0</div><div class="l">Pedidos hoje</div></div>
+    </div>
+    <div id="humanos" class="card" style="padding:6px 14px"><div class="hist-empty">Carregando...</div></div>
     <div class="card">
       <div class="toolbar">
         <input id="busca" placeholder="🔎 Buscar número..." oninput="render()" />
@@ -412,6 +502,7 @@ function entrar(){
     document.getElementById("app").style.display="block";
     aplicar(j);
     carregarEstado();
+    carregarHumanos();
   }).catch(function(){document.getElementById("loginerr").textContent="Erro de conexão."});
 }
 function carregar(){
@@ -464,6 +555,33 @@ function aplicarHist(j){
       '</div></div>';
   });
   box.innerHTML=html;
+}
+// ===== HUMANOS =====
+function carregarHumanos(){
+  fetch("/api/humanos?token="+q(TK)).then(function(r){return r.json()}).then(aplicarHumanos);
+}
+function aplicarHumanos(j){
+  document.getElementById("h-total").textContent=j.total||0;
+  document.getElementById("h-hoje").textContent=j.hoje||0;
+  var box=document.getElementById("humanos");
+  var lista=j.lista||[];
+  if(!lista.length){box.innerHTML='<div class="hist-empty">Nenhum pedido de atendimento ainda. 🟢</div>';return}
+  var html="";
+  lista.forEach(function(x){
+    var statusAviso = x.avisosEnviados>0
+      ? (x.avisosOk+'/'+x.avisosEnviados+' avisos OK ✓')
+      : 'sem aviso';
+    html+='<div class="hist-item"><div class="dot" style="background:#3b82f6"></div><div class="info">'+
+      '<div class="mt">'+esc(x.telefone)+(x.nome?' <span>· '+esc(x.nome)+'</span>':'')+'</div>'+
+      (x.motivo?'<div class="meta">Motivo: '+esc(x.motivo)+'</div>':'')+
+      '<div class="meta">'+fmt(x.quando)+' · '+statusAviso+'</div>'+
+      '</div><div><a class="wa" target="_blank" href="https://wa.me/'+esc(x.telefone)+'">WhatsApp</a></div></div>';
+  });
+  box.innerHTML=html;
+}
+function limparHumanos(){
+  if(!confirm("Limpar TODO o histórico de pedidos de atendimento humano?"))return;
+  fetch("/api/humanos/limpar?token="+q(TK),{method:"POST"}).then(function(){carregarHumanos()});
 }
 function pausarNow(){
   var m=document.getElementById("pausa-motivo").value.trim();
@@ -594,6 +712,44 @@ async function handleTeste(req, res) {
 app.post("/teste", handleTeste);
 app.get("/teste", handleTeste);
 
+// ---- endpoint de ATENDIMENTO HUMANO ----
+// Dispara aviso pros números de atendimento via BotBot e responde pro cliente.
+async function handleHumano(req, res) {
+  logReq(req, "ATENDIMENTO HUMANO");
+  const telefone = extrairTelefone(req);
+  const b = req.body || {}, q = req.query || {};
+  const nome = b.senderName || q.senderName || "";
+  const motivo = b.senderMessage || b.motivo || q.motivo || "";
+
+  if (!telefone) return responderBotBot(res, "Não consegui identificar seu número. 😕 Tente novamente.");
+
+  // dispara aviso pros humanos (não bloqueia a resposta pro cliente)
+  let avisos = [];
+  try {
+    avisos = await avisarHumanos(telefone, nome, motivo);
+  } catch (e) {
+    console.error("[humano] erro geral:", e.message);
+  }
+
+  // registra no log
+  const okCount = (avisos || []).filter(a => a.ok).length;
+  humanosLog.unshift({
+    quando: Date.now(),
+    telefone,
+    nome: nome || "",
+    motivo: motivo || "",
+    avisosEnviados: (avisos || []).length,
+    avisosOk: okCount,
+  });
+  if (humanosLog.length > 200) humanosLog.pop();
+  salvarHumanos();
+
+  console.log(`[humano] pedido registrado: ${telefone} | avisos OK: ${okCount}/${(avisos || []).length}`);
+  return responderBotBot(res, MSG_HUMANO_CLIENTE);
+}
+app.post("/humano", handleHumano);
+app.get("/humano", handleHumano);
+
 app.get("/debug", (_req, res) => {
   texto(res,
     "== ULTIMAS CHAMADAS DO BOTBOT ==\n\n" +
@@ -682,13 +838,34 @@ app.get("/api/historico", (req, res) => {
   res.json({ total: pausa.historico.length, historico: pausa.historico });
 });
 
+// ---- LOG DE PEDIDOS DE ATENDIMENTO HUMANO ----
+app.get("/api/humanos", (req, res) => {
+  if (req.query.token !== ADMIN_TOKEN) return res.status(401).json({ error: "token" });
+  const total = humanosLog.length;
+  const hoje = new Date().toDateString();
+  const hojeCount = humanosLog.filter(h => new Date(h.quando).toDateString() === hoje).length;
+  res.json({ total, hoje: hojeCount, lista: humanosLog });
+});
+app.post("/api/humanos/limpar", (req, res) => {
+  if (req.query.token !== ADMIN_TOKEN) return res.status(401).json({ error: "token" });
+  humanosLog = [];
+  salvarHumanos();
+  res.json({ ok: true });
+});
+app.get("/api/humanos/limpar", (req, res) => {
+  if (req.query.token !== ADMIN_TOKEN) return res.status(401).json({ error: "token" });
+  humanosLog = [];
+  salvarHumanos();
+  res.json({ ok: true });
+});
+
 // ---- PAINEL VISUAL ----
 app.get("/painel", (_req, res) => {
   res.set("Content-Type", "text/html; charset=utf-8").send(DASHBOARD_HTML);
 });
 
 app.get("/", (_req, res) =>
-  texto(res, `API anti-duplicado OK\nNumeros: ${registro.size}\nBloqueio: ${DEDUP_DAYS > 0 ? DEDUP_DAYS + " dias" : "permanente"}\nGeracao de testes: ${pausa.ativa ? "PAUSADA (" + pausa.motivo + ")" : "ativa"}\n\nPainel visual: /painel`)
+  texto(res, `API anti-duplicado OK\nNumeros: ${registro.size}\nBloqueio: ${DEDUP_DAYS > 0 ? DEDUP_DAYS + " dias" : "permanente"}\nGeracao de testes: ${pausa.ativa ? "PAUSADA (" + pausa.motivo + ")" : "ativa"}\nAviso humanos: ${AVISO_HUMANOS.join(", ")}\n\nPainel visual: /painel`)
 );
 
 app.listen(PORT, () => console.log(`[ok] porta ${PORT}`));

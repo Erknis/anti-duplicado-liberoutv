@@ -62,6 +62,45 @@ const MSG_HUMANO_CLIENTE =
   "Um operador foi acionado e *logo irá falar com você aqui mesmo*. ⏳\n\n" +
   "Obrigado pela paciência! 🙏";
 
+// ---- RENOVAÇÃO ----
+// Cliente tem login/checkout salvos -> manda o link DELE (renovação com 1 clique)
+function msgRenovacaoComLogin(dados) {
+  return (
+    "🔄 *Renovação do seu plano* 🔄\n\n" +
+    "Encontramos seu cadastro! 🎉\n\n" +
+    "👤 *Seu login:*\n" +
+    "✅ Usuário: " + dados.username + "\n" +
+    "✅ Senha: " + dados.password + "\n" +
+    (dados.vence ? "⏳ Vence em: " + dados.vence + "\n" : "") +
+    "\n💳 *Renove aqui (ativação automática):*\n" + dados.payUrl + "\n\n" +
+    "Assim que o pagamento cair, seu acesso é renovado na hora! 🚀\n" +
+    "Precisa de ajuda? Digite *HUMANO*. 👤"
+  );
+}
+
+// Cliente existe no banco mas sem checkout salvo (cadastro antigo)
+function msgRenovacaoSemCheckout() {
+  return (
+    "🔄 *Renovação do seu plano* 🔄\n\n" +
+    "Identificamos seu número! 😊\n" +
+    "Para renovar seu acesso agora mesmo:\n\n" +
+    "💳 *Pague em 1 minuto:*\n" + LINK_VENDA_PADRAO + "\n\n" +
+    "Assim que o pagamento cair, seu acesso é liberado na hora! 🚀\n" +
+    "Prefere falar com a equipe? Digite *HUMANO*. 👤"
+  );
+}
+
+// Cliente NÃO encontrado no banco (número desconhecido)
+function msgRenovacaoNaoEncontrado() {
+  return (
+    "🤔 *Não encontrei seu cadastro*\n\n" +
+    "Não localizei um teste ativo pra esse número. 😕\n\n" +
+    "Mas tudo bem! Você pode:\n" +
+    "✨ Gerar um *novo teste grátis* (digite a opção de teste)\n\n" +
+    "Ou *HUMANO* pra falar com a nossa equipe. 👤"
+  );
+}
+
 // ---- envia aviso pros números humanos via BotBot ----
 // Limpa o "motivo": se vier "Seleção da Lista: <uuid>" do BotBot, troca por algo legível.
 function limparMotivo(motivo, telefoneCliente) {
@@ -764,6 +803,34 @@ async function handleHumano(req, res) {
 }
 app.post("/humano", handleHumano);
 app.get("/humano", handleHumano);
+
+// ---- endpoint de RENOVAÇÃO ----
+// Busca o número no banco e devolve o link de checkout DELE (renovação com 1 clique).
+async function handleRenovar(req, res) {
+  logReq(req, "RENOVACAO");
+  const telefone = extrairTelefone(req);
+  if (!telefone) return responderBotBot(res, MSG_SEM_NUMERO);
+
+  const dados = registro.get(telefone);
+
+  // Cliente encontrado E com login + checkout salvos -> link DELE
+  if (dados && dados.username && dados.payUrl) {
+    console.log(`[renovar] ${telefone}: encontrou login + checkout`);
+    return responderBotBot(res, msgRenovacaoComLogin(dados));
+  }
+
+  // Cliente existe mas é antigo (sem login salvo) -> link de venda padrão
+  if (dados) {
+    console.log(`[renovar] ${telefone}: cadastro antigo sem checkout, link genérico`);
+    return responderBotBot(res, msgRenovacaoSemCheckout());
+  }
+
+  // Cliente não encontrado -> sugere novo teste ou humano
+  console.log(`[renovar] ${telefone}: não encontrado`);
+  return responderBotBot(res, msgRenovacaoNaoEncontrado());
+}
+app.post("/renovar", handleRenovar);
+app.get("/renovar", handleRenovar);
 
 app.get("/debug", (_req, res) => {
   texto(res,

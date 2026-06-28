@@ -58,9 +58,10 @@ function gravar(telefone) {
   fs.appendFileSync(DB_FILE, `${telefone},${new Date(agora).toISOString()}\n`);
 }
 
+const painelLog = [];
 async function gerarTesteNoPainel(rawBody, contentType) {
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 15000);
+  const timer = setTimeout(() => ctrl.abort(), 20000);
   try {
     // repassa pro painel o MESMO pacote que o BotBot mandou (com senderPhone etc.)
     const r = await fetch(PAINEL_URL, {
@@ -69,10 +70,15 @@ async function gerarTesteNoPainel(rawBody, contentType) {
       body: rawBody && rawBody.length ? rawBody : "{}",
       signal: ctrl.signal,
     });
-    const body = (await r.text()).slice(0, 300);
-    console.log(`[painel] status=${r.status} resp=${body}`);
+    const body = await r.text();
+    painelLog.unshift({ quando: new Date().toISOString(), status: r.status, resp: (body || "").slice(0, 800) });
+    if (painelLog.length > 15) painelLog.pop();
+    console.log(`[painel] status=${r.status} resp=${(body || "").slice(0, 300)}`);
+    return { status: r.status, body: body || "" };
   } catch (e) {
+    painelLog.unshift({ quando: new Date().toISOString(), status: "ERRO", resp: String(e) });
     console.error("[painel] erro:", e.message);
+    return { status: 0, body: "" };
   } finally {
     clearTimeout(timer);
   }
@@ -115,20 +121,29 @@ app.use(express.urlencoded({ extended: true, verify: captureRaw }));
 
 function texto(res, s) { res.set("Content-Type", "text/plain; charset=utf-8").send(s); }
 
-function handleTeste(req, res) {
+async function handleTeste(req, res) {
   logReq(req);
   const telefone = extrairTelefone(req);
   if (!telefone) return texto(res, MSG_SEM_NUMERO);
   if (jaBloqueado(telefone)) return texto(res, MSG_JA_TESTOU);
   gravar(telefone);
-  texto(res, MSG_GERANDO);
-  gerarTesteNoPainel(req.rawBody, req.headers["content-type"]).catch(() => {});
+  // chama o painel e DEVOLVE a resposta dele (onde vem o teste) pro BotBot
+  const r = await gerarTesteNoPainel(req.rawBody, req.headers["content-type"]);
+  const corpo = (r.body || "").trim();
+  if (r.status >= 200 && r.status < 300 && corpo && corpo.charAt(0) !== "<") {
+    return texto(res, corpo);            // repassa o teste que o painel gerou
+  }
+  return texto(res, MSG_GERANDO);        // fallback (o painel pode entregar por conta própria)
 }
 app.post("/teste", handleTeste);
 app.get("/teste", handleTeste);
 
 app.get("/debug", (_req, res) => {
-  texto(res, "ULTIMAS CHAMADAS:\n\n" + ultimas.map(u => JSON.stringify(u, null, 2)).join("\n\n"));
+  texto(res,
+    "== ULTIMAS CHAMADAS DO BOTBOT ==\n\n" +
+    ultimas.map(u => JSON.stringify(u, null, 2)).join("\n\n") +
+    "\n\n\n== ULTIMAS RESPOSTAS DO PAINEL ==\n\n" +
+    painelLog.map(u => JSON.stringify(u, null, 2)).join("\n\n"));
 });
 
 app.get("/numeros", (req, res) => {

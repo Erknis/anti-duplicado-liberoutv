@@ -304,13 +304,16 @@ app.use(express.urlencoded({ extended: true, verify: captureRaw }));
 
 function texto(res, s) { res.set("Content-Type", "text/plain; charset=utf-8").send(s); }
 
+// Resposta pro BotBot: ele lê a mensagem do campo "reply" (JSON).
+function responderBotBot(res, s) { res.json({ reply: s }); }
+
 async function handleTeste(req, res) {
   logReq(req);
   const telefone = extrairTelefone(req);
-  if (!telefone) return texto(res, MSG_SEM_NUMERO);
+  if (!telefone) return responderBotBot(res, MSG_SEM_NUMERO);
 
   // JÁ TESTOU -> mensagem de venda (não chama o painel)
-  if (jaBloqueado(telefone)) return texto(res, msgJaTestou());
+  if (jaBloqueado(telefone)) return responderBotBot(res, msgJaTestou());
 
   // número novo -> chama o painel e monta a mensagem personalizada
   const r = await gerarTesteNoPainel(req.rawBody, req.headers["content-type"]);
@@ -319,11 +322,11 @@ async function handleTeste(req, res) {
 
   if (d && d.username && d.password) {
     gravar(telefone);                       // só bloqueia se REALMENTE gerou o teste
-    return texto(res, msgTesteAprovado(d));
+    return responderBotBot(res, msgTesteAprovado(d));
   }
 
   // painel não retornou um teste válido -> NÃO bloqueia (deixa tentar de novo)
-  return texto(res, MSG_GERANDO);
+  return responderBotBot(res, MSG_GERANDO);
 }
 app.post("/teste", handleTeste);
 app.get("/teste", handleTeste);

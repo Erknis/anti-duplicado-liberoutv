@@ -30,6 +30,60 @@ const MSG_GERANDO =
 const MSG_SEM_NUMERO =
   "Não consegui identificar seu número. 😕 Digite *HUMANO* que um atendente te ajuda.";
 
+// Link de venda usado quando o painel não mandar um payUrl do cliente
+const LINK_VENDA_PADRAO = process.env.LINK_VENDA ||
+  "https://painelblackbr.site/#/checkout/241KARvDmx/VrW8PmVPWK";
+
+// ---- mensagem quando o número JÁ testou (negado) -> leva pra venda ----
+function msgJaTestou(payUrl) {
+  const link = payUrl || LINK_VENDA_PADRAO;
+  return (
+    "⚠️ *Esse número já usou o teste grátis!* 😊\n\n" +
+    "Mas não precisa parar por aqui — dá pra continuar assistindo *sem travamentos*, " +
+    "com tudo liberado, agora mesmo. 🍿🔥\n\n" +
+    "💳 *Assine em 1 minuto:*\n" + link + "\n\n" +
+    "Assim que o pagamento cair, seu acesso é liberado na hora! 🚀\n" +
+    "Ou digite *HUMANO* para falar com a nossa equipe. 👤"
+  );
+}
+
+// ---- mensagem do teste aprovado (personalizada) ----
+function msgTesteAprovado(d) {
+  const u = d.username, p = d.password, dns = d.dns;
+  const m3u = `${dns}/get.php?username=${u}&password=${p}&type=m3u_plus&output=mpegts`;
+  return (
+"📺 *SEJA BEM-VINDO A LIBEROU TV !*\n" +
+`✅ Usuário: ${u}\n` +
+`✅ Senha: ${p}\n` +
+`📦 Plano: ${d.package}\n` +
+`⏳ Vence: ${d.expiresAtFormatted}\n` +
+`📶 Conexões: ${d.connections}\n` +
+`🌎 DNS: ${dns}\n` +
+"📥 M3U:\n" + m3u + "\n" +
+`💳 Renovar: ${d.payUrl}\n` +
+"⭐ *APPS PARCEIROS:*\n" +
+"▪ VIZZION PLAY (Samsung, LG, Roku, Android)\n" +
+"  Código: 701266\n" +
+`  User: ${u} | Senha: ${p}\n` +
+"▪ ASSIST+ (Samsung, LG, Roku, Android)\n" +
+"  Código: 926692\n" +
+`  User: ${u} | Senha: ${p}\n` +
+"▪ EPICPLAY (Samsung, LG, Roku, Android)\n" +
+"  Código: 456642\n" +
+`  User: ${u} | Senha: ${p}\n` +
+"▪ MAGIC PLAYER (Roku, LG, Android)\n" +
+"  Código: 926692\n" +
+`  User: ${u} | Senha: ${p}\n` +
+"▪ ZINK (Playstore, Fire TV, Roku)\n" +
+`  User: ${u} | Senha: ${p}\n` +
+"▪ PLAYER OTT (Playstore, Roku)\n" +
+`  User: ${u} | Senha: ${p}\n` +
+"▪ UNI TV (Android)\n" +
+"  Downloader: 9387398\n" +
+"BlackBr ®️"
+  );
+}
+
 fs.mkdirSync(DATA_DIR, { recursive: true });
 if (!fs.existsSync(DB_FILE)) fs.writeFileSync(DB_FILE, "telefone,data_iso\n");
 
@@ -125,15 +179,22 @@ async function handleTeste(req, res) {
   logReq(req);
   const telefone = extrairTelefone(req);
   if (!telefone) return texto(res, MSG_SEM_NUMERO);
-  if (jaBloqueado(telefone)) return texto(res, MSG_JA_TESTOU);
-  gravar(telefone);
-  // chama o painel e DEVOLVE a resposta dele (onde vem o teste) pro BotBot
+
+  // JÁ TESTOU -> mensagem de venda (não chama o painel)
+  if (jaBloqueado(telefone)) return texto(res, msgJaTestou());
+
+  // número novo -> chama o painel e monta a mensagem personalizada
   const r = await gerarTesteNoPainel(req.rawBody, req.headers["content-type"]);
-  const corpo = (r.body || "").trim();
-  if (r.status >= 200 && r.status < 300 && corpo && corpo.charAt(0) !== "<") {
-    return texto(res, corpo);            // repassa o teste que o painel gerou
+  let d = null;
+  try { d = JSON.parse(r.body); } catch (e) {}
+
+  if (d && d.username && d.password) {
+    gravar(telefone);                       // só bloqueia se REALMENTE gerou o teste
+    return texto(res, msgTesteAprovado(d));
   }
-  return texto(res, MSG_GERANDO);        // fallback (o painel pode entregar por conta própria)
+
+  // painel não retornou um teste válido -> NÃO bloqueia (deixa tentar de novo)
+  return texto(res, MSG_GERANDO);
 }
 app.post("/teste", handleTeste);
 app.get("/teste", handleTeste);

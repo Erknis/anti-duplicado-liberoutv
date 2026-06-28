@@ -58,16 +58,15 @@ function gravar(telefone) {
   fs.appendFileSync(DB_FILE, `${telefone},${new Date(agora).toISOString()}\n`);
 }
 
-async function gerarTesteNoPainel(telefone) {
-  const url = PAINEL_URL + (PAINEL_URL.includes("?") ? "&" : "?") +
-              "telefone=" + encodeURIComponent(telefone);
+async function gerarTesteNoPainel(rawBody, contentType) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 15000);
   try {
-    const r = await fetch(url, {
+    // repassa pro painel o MESMO pacote que o BotBot mandou (com senderPhone etc.)
+    const r = await fetch(PAINEL_URL, {
       method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ telefone }).toString(),
+      headers: { "Content-Type": contentType || "application/json" },
+      body: rawBody && rawBody.length ? rawBody : "{}",
       signal: ctrl.signal,
     });
     const body = (await r.text()).slice(0, 300);
@@ -98,8 +97,9 @@ function logReq(req, extra) {
 
 function extrairTelefone(req) {
   const b = req.body || {}, q = req.query || {};
-  let t = b.telefone || b.phone || b.numero || b.number || b.from || b.contato ||
-          b.sender || b.celular || q.telefone || q.phone || q.numero || q.number ||
+  let t = b.senderPhone || b.telefone || b.phone || b.numero || b.number || b.from ||
+          b.contato || b.sender || b.celular ||
+          q.senderPhone || q.telefone || q.phone || q.numero || q.number ||
           q.from || q.contato || q.sender || q.celular || "";
   if (!t && req.rawBody) {
     const m = String(req.rawBody).match(/\d[\d\s().-]{7,}/);
@@ -122,7 +122,7 @@ function handleTeste(req, res) {
   if (jaBloqueado(telefone)) return texto(res, MSG_JA_TESTOU);
   gravar(telefone);
   texto(res, MSG_GERANDO);
-  gerarTesteNoPainel(telefone).catch(() => {});
+  gerarTesteNoPainel(req.rawBody, req.headers["content-type"]).catch(() => {});
 }
 app.post("/teste", handleTeste);
 app.get("/teste", handleTeste);

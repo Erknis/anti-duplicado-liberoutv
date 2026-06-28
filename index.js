@@ -62,6 +62,51 @@ const MSG_HUMANO_CLIENTE =
   "Um operador foi acionado e *logo irá falar com você aqui mesmo*. ⏳\n\n" +
   "Obrigado pela paciência! 🙏";
 
+// ---- DATAS: lê o vencimento salvo (data crua ISO ou texto BR dd/mm/aaaa) ----
+function parseVencimento(dados) {
+  if (!dados) return null;
+  // 1) data crua salva nos testes novos: "2026-06-28 04:28:24"
+  const iso = dados.venceISO || dados.expiresAt || "";
+  if (iso) {
+    const d = new Date(String(iso).replace(" ", "T"));
+    if (!isNaN(d.getTime())) return d;
+  }
+  // 2) texto brasileiro em 'vence': "28/06/2026 04:28:24" ou só "28/06/2026"
+  const m = String(dados.vence || "").trim()
+    .match(/(\d{2})\/(\d{2})\/(\d{4})(?:\s+(\d{2}):(\d{2})(?::(\d{2}))?)?/);
+  if (m) {
+    const [, dd, mm, yyyy, hh = "23", mi = "59", ss = "59"] = m;
+    const d = new Date(+yyyy, +mm - 1, +dd, +hh, +mi, +ss);
+    if (!isNaN(d.getTime())) return d;
+  }
+  return null;
+}
+function diasPassados(date) { return Math.floor((Date.now() - date.getTime()) / 86400000); }
+function dataBR(date) {
+  return date.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit", year: "numeric" });
+}
+function textoVencido(dias) {
+  if (dias <= 0) return "hoje";
+  if (dias === 1) return "ontem (há 1 dia)";
+  return "há " + dias + " dias";
+}
+
+// Cliente com teste VENCIDO -> avisa que venceu + oferece renovar (login/checkout dele)
+function msgRenovacaoVencido(dados, venc) {
+  const quando = textoVencido(diasPassados(venc));
+  return (
+    "⚠️ *Seu teste já venceu!* 😢\n\n" +
+    "Seu acesso expirou em " + dataBR(venc) + " (" + quando + ").\n\n" +
+    "Mas é rapidinho voltar a assistir — é só renovar! 👇\n\n" +
+    "👤 *Seu login:*\n" +
+    "✅ Usuário: " + dados.username + "\n" +
+    "✅ Senha: " + dados.password + "\n\n" +
+    "💳 *Renove aqui (ativação automática):*\n" + dados.payUrl + "\n\n" +
+    "Assim que o pagamento cair, seu acesso volta na hora! 🚀\n" +
+    "Precisa de ajuda? Digite *HUMANO*. 👤"
+  );
+}
+
 // ---- RENOVAÇÃO ----
 // Cliente tem login/checkout salvos -> manda o link DELE (renovação com 1 clique)
 function msgRenovacaoComLogin(dados) {
@@ -82,11 +127,10 @@ function msgRenovacaoComLogin(dados) {
 function msgRenovacaoSemCheckout() {
   return (
     "🔄 *Renovação do seu plano* 🔄\n\n" +
-    "Identificamos seu número! 😊\n" +
-    "Para renovar seu acesso agora mesmo:\n\n" +
-    "💳 *Pague em 1 minuto:*\n" + LINK_VENDA_PADRAO + "\n\n" +
-    "Assim que o pagamento cair, seu acesso é liberado na hora! 🚀\n" +
-    "Prefere falar com a equipe? Digite *HUMANO*. 👤"
+    "Identificamos seu número! 😊\n\n" +
+    "Só preciso te transferir pra um atendente pegar seu link de renovação " +
+    "certinho, com a sua conta. É rapidinho! 👇\n\n" +
+    "👉 Digite *HUMANO* que já te atendemos. 👤"
   );
 }
 
@@ -174,14 +218,22 @@ function msgJaTestou(dados) {
       "Ou digite *HUMANO* para falar com a nossa equipe. 👤"
     );
   }
-  const link = (dados && dados.payUrl) || LINK_VENDA_PADRAO;
+  // tem o checkout salvo (mesmo sem username) -> manda o link DELE
+  if (dados && dados.payUrl) {
+    return (
+      "⚠️ *Esse número já usou o teste grátis!* 😊\n\n" +
+      "Mas dá pra continuar assistindo agora mesmo, com tudo liberado. 🍿🔥\n\n" +
+      "💳 *Assine em 1 minuto (ativação automática):*\n" + dados.payUrl + "\n\n" +
+      "Assim que o pagamento cair, seu acesso é liberado na hora! 🚀\n" +
+      "Ou digite *HUMANO* para falar com a nossa equipe. 👤"
+    );
+  }
+  // não temos o link salvo desse número -> manda pro atendente (não inventa link)
   return (
     "⚠️ *Esse número já usou o teste grátis!* 😊\n\n" +
-    "Mas não precisa parar por aqui — dá pra continuar assistindo *sem travamentos*, " +
-    "com tudo liberado, agora mesmo. 🍿🔥\n\n" +
-    "💳 *Assine em 1 minuto:*\n" + link + "\n\n" +
-    "Assim que o pagamento cair, seu acesso é liberado na hora! 🚀\n" +
-    "Ou digite *HUMANO* para falar com a nossa equipe. 👤"
+    "Pra te passar o link de assinatura certinho, vou te transferir " +
+    "pra um atendente — é rapidinho! 👇\n\n" +
+    "👉 Digite *HUMANO* que já te atendemos. 👤"
   );
 }
 
@@ -313,6 +365,7 @@ function salvarArquivo() {
           pacote: it.pacote || "",
           conexoes: it.conexoes || "",
           vence: it.vence || "",
+          venceISO: it.venceISO || "",
         });
       }
     } catch (e) { console.error("[init] erro lendo json:", e.message); }
@@ -755,6 +808,7 @@ async function handleTeste(req, res) {
       pacote: d.package || "",
       conexoes: d.connections || "",
       vence: d.expiresAtFormatted || "",
+      venceISO: d.expiresAt || "",
     });
     return responderBotBot(res, msgTesteAprovado(d));
   }
@@ -815,7 +869,12 @@ async function handleRenovar(req, res) {
 
   // Cliente encontrado E com login + checkout salvos -> link DELE
   if (dados && dados.username && dados.payUrl) {
-    console.log(`[renovar] ${telefone}: encontrou login + checkout`);
+    const venc = parseVencimento(dados);
+    if (venc && Date.now() > venc.getTime()) {
+      console.log(`[renovar] ${telefone}: teste VENCIDO em ${dataBR(venc)}`);
+      return responderBotBot(res, msgRenovacaoVencido(dados, venc));
+    }
+    console.log(`[renovar] ${telefone}: encontrou login + checkout (ativo)`);
     return responderBotBot(res, msgRenovacaoComLogin(dados));
   }
 

@@ -63,13 +63,27 @@ const MSG_HUMANO_CLIENTE =
   "Obrigado pela paciência! 🙏";
 
 // ---- envia aviso pros números humanos via BotBot ----
+// Limpa o "motivo": se vier "Seleção da Lista: <uuid>" do BotBot, troca por algo legível.
+function limparMotivo(motivo, telefoneCliente) {
+  const m = String(motivo || "").trim();
+  if (!m) return "";
+  // BotBot registra clique em menu como "Seleção da Lista: <uuid>" -> não é útil
+  if (/^sele[cç][aã]o da lista/i.test(m)) return "";
+  return m;
+}
+
 // texto do aviso que vai pro(s) número(es) de atendimento
 function msgAvisoHumano(telefoneCliente, nomeCliente, motivo) {
+  const motivoLimpo = limparMotivo(motivo, telefoneCliente);
   let s = "🚨 *PEDIDO DE ATENDIMENTO HUMANO* 🚨\n\n";
   s += "📞 Cliente: " + telefoneCliente;
   if (nomeCliente) s += " (" + nomeCliente + ")";
   s += "\n";
-  if (motivo) s += "📝 Motivo: " + motivo + "\n";
+  if (motivoLimpo) {
+    s += "📝 Motivo: " + motivoLimpo + "\n";
+  } else {
+    s += "📝 O cliente pediu pra falar com um atendente pelo menu.\n";
+  }
   s += "\n👉 Falar com o cliente pelo WhatsApp:\n";
   s += "https://wa.me/" + telefoneCliente;
   return s;
@@ -719,7 +733,8 @@ async function handleHumano(req, res) {
   const telefone = extrairTelefone(req);
   const b = req.body || {}, q = req.query || {};
   const nome = b.senderName || q.senderName || "";
-  const motivo = b.senderMessage || b.motivo || q.motivo || "";
+  const motivoRaw = b.senderMessage || b.motivo || q.motivo || "";
+  const motivo = limparMotivo(motivoRaw, telefone);
 
   if (!telefone) return responderBotBot(res, "Não consegui identificar seu número. 😕 Tente novamente.");
 

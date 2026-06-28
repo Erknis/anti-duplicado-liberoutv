@@ -10,6 +10,7 @@
 import express from "express";
 import fs from "fs";
 import path from "path";
+import crypto from "crypto";
 import { fileURLToPath } from "url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -32,6 +33,16 @@ const BOTBOT_AUTHKEY= process.env.BOTBOT_AUTHKEY || "2NvnaUg2JqxYiUfYYwpNcoSQNJn
 // números que recebem o aviso (separar vários por vírgula)
 const AVISO_HUMANOS = (process.env.AVISO_HUMANOS || "5535998877595,5553991836803")
   .split(",").map(s => String(s).replace(/\D/g, "")).filter(Boolean);
+
+// ---- Stripe (aviso de pagamento aprovado) ----
+// Só o signing secret (whsec) é necessário pra validar o webhook com segurança.
+const STRIPE_WHSEC  = process.env.STRIPE_WHSEC || "whsec_h2qi4DFERkO5BElll4EUmJS2uSD6G8Y6";
+const STRIPE_SECRET = process.env.STRIPE_SECRET || ""; // sk_live_ (opcional, não usado por enquanto)
+// quem recebe o aviso de pagamento (padrão = os mesmos números do humano)
+const AVISO_PAGAMENTOS = (process.env.AVISO_PAGAMENTOS || AVISO_HUMANOS.join(","))
+  .split(",").map(s => String(s).replace(/\D/g, "")).filter(Boolean);
+const PAGAMENTOS_LOG = path.join(DATA_DIR, "pagamentos.json");
+const stripeEventosVistos = new Set(); // idempotência (não avisa o mesmo pagamento 2x)
 
 const MSG_GERANDO =
   "🎉 *Instalação confirmada!*\n\n⏳ Gerando seu TESTE GRÁTIS, aguarde alguns segundos...";
@@ -200,6 +211,73 @@ async function avisarHumanos(telefoneCliente, nomeCliente, motivo) {
     }
   }
   return resultados;
+}
+
+// ---- envio genérico pelo BotBot ----
+async function enviarBotBot(numero, texto) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 15000);
+  try {
+    const r = await fetch(`${BOTBOT_BASE}/api/v2/sendText`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "appKey": BOTBOT_APPKEY, "authKey": BOTBOT_AUTHKEY },
+      body: JSON.stringify({ to: numero, message: texto }),
+      signal: ctrl.signal,
+    });
+    const body = await r.text();
+    console.log(`[bot] -> ${numero} status=${r.status} resp=${(body || "").slice(0, 150)}`);
+    return r.status >= 200 && r.status < 300;
+  } catch (e) {
+    console.error(`[bot] erro -> ${numero}:`, e.message);
+    return false;
+  } finally { clearTimeout(timer); }
+}
+
+// ---- valida a assinatura do webhook da Stripe (sem libs externas) ----
+function verificarStripe(rawBody, sigHeader) {
+  try {
+    if (!sigHeader || !rawBody) return null;
+    const itens = sigHeader.split(",").map(kv => kv.split("="));
+    const t = (itens.find(i => i[0] === "t") || [])[1];
+    const v1s = itens.filter(i => i[0] === "v1").map(i => i[1]);
+    if (!t || !v1s.length) return null;
+    const esperado = crypto.createHmac("sha256", STRIPE_WHSEC)
+      .update(`${t}.${rawBody}`, "utf8").digest("hex");
+    const a = Buffer.from(esperado);
+    const bate = v1s.some(sig => {
+      try { const b = Buffer.from(sig); return b.length === a.length && crypto.timingSafeEqual(a, b); }
+      catch { return false; }
+    });
+    if (!bate) return null;
+    // anti-replay: tolera 5 min de diferença
+    if (Math.abs(Date.now() / 1000 - Number(t)) > 300) return null;
+    return JSON.parse(rawBody);
+  } catch (e) {
+    console.error("[stripe] verificacao falhou:", e.message);
+    return null;
+  }
+}
+
+// ---- aviso de pagamento pros seus números ----
+async function avisarPagamento(info) {
+  const msg =
+    "💰 *PAGAMENTO APROVADO!* 🎉\n\n" +
+    (info.nome ? "👤 " + info.nome + "\n" : "") +
+    "📧 E-mail: " + (info.email || "—") + "\n" +
+    "💵 Valor: " + info.valor + " " + info.moeda + "\n" +
+    (info.phone ? "📞 Tel: " + info.phone + " (avisei o cliente)\n" : "") +
+    "\n✅ O Sigma libera o acesso automaticamente.";
+  for (const num of AVISO_PAGAMENTOS) await enviarBotBot(num, msg);
+}
+
+function registrarPagamento(p) {
+  try {
+    let arr = [];
+    try { arr = JSON.parse(fs.readFileSync(PAGAMENTOS_LOG, "utf8")); } catch {}
+    arr.unshift(p);
+    if (arr.length > 1000) arr = arr.slice(0, 1000);
+    fs.writeFileSync(PAGAMENTOS_LOG, JSON.stringify(arr, null, 2));
+  } catch (e) { console.error("[stripe] log erro:", e.message); }
 }
 
 // ---- mensagem quando o número JÁ testou (negado) -> leva pra venda ----
@@ -790,8 +868,13 @@ async function handleTeste(req, res) {
 
   if (!telefone) return responderBotBot(res, MSG_SEM_NUMERO);
 
-  // JÁ TESTOU -> mensagem de venda com o LOGIN e CHECKOUT salvos (se houver)
-  if (jaBloqueado(telefone)) return responderBotBot(res, msgJaTestou(registro.get(telefone)));
+  // JÁ TESTOU **e temos os dados dele** -> mostra login + checkout salvos.
+  // Se está bloqueado mas SEM dados (registro antigo/incompleto), deixa gerar
+  // de novo pra preencher os dados — aí passa a funcionar no "já testou" e no "renovar".
+  const reg = buscarCliente(telefone);
+  if (reg && reg.payUrl && bloqueadoPorData(reg)) {
+    return responderBotBot(res, msgJaTestou(reg));
+  }
 
   // número novo -> chama o painel e monta a mensagem personalizada
   const r = await gerarTesteNoPainel(req.rawBody, req.headers["content-type"]);
@@ -871,10 +954,22 @@ function variantesTelefone(t) {
   return [...set];
 }
 function buscarCliente(telefone) {
+  let fallback = null;
   for (const v of variantesTelefone(telefone)) {
-    if (registro.has(v)) return registro.get(v);
+    if (registro.has(v)) {
+      const d = registro.get(v);
+      if (d && d.payUrl) return d;     // prefere o registro que TEM os dados salvos
+      if (!fallback) fallback = d;
+    }
   }
-  return null;
+  return fallback;
+}
+// bloqueio baseado no registro encontrado (respeitando DEDUP_DAYS)
+function bloqueadoPorData(reg) {
+  if (!reg) return false;
+  if (DEDUP_DAYS <= 0) return true;
+  const dias = (Date.now() - reg.data) / (1000 * 60 * 60 * 24);
+  return dias < DEDUP_DAYS;
 }
 
 // ---- endpoint de RENOVAÇÃO ----
@@ -904,6 +999,52 @@ async function handleRenovar(req, res) {
 }
 app.post("/renovar", handleRenovar);
 app.get("/renovar", handleRenovar);
+
+// ---- WEBHOOK STRIPE: avisa quando um pagamento é aprovado ----
+async function handleStripe(req, res) {
+  const evt = verificarStripe(req.rawBody, req.headers["stripe-signature"]);
+  if (!evt) {
+    console.warn("[stripe] assinatura inválida — ignorado");
+    return res.status(400).send("assinatura invalida");
+  }
+  // idempotência: não processa o mesmo evento 2x (a Stripe pode reenviar)
+  if (evt.id) {
+    if (stripeEventosVistos.has(evt.id)) return res.json({ received: true });
+    stripeEventosVistos.add(evt.id);
+    if (stripeEventosVistos.size > 1000) stripeEventosVistos.clear();
+  }
+
+  if (evt.type === "checkout.session.completed" ||
+      evt.type === "checkout.session.async_payment_succeeded") {
+    const s = (evt.data && evt.data.object) || {};
+    const cd = s.customer_details || {};
+    const info = {
+      email: cd.email || s.customer_email || "—",
+      nome:  cd.name || "",
+      phone: soDigitos(cd.phone || ""),
+      valor: (typeof s.amount_total === "number") ? (s.amount_total / 100).toFixed(2) : "?",
+      moeda: (s.currency || "brl").toUpperCase(),
+      quando: new Date().toISOString(),
+    };
+    console.log(`[stripe] PAGAMENTO ok email=${info.email} valor=${info.valor} ${info.moeda} tel=${info.phone || "-"}`);
+
+    // 1) avisa VOCÊ (sempre, 100% confiável)
+    await avisarPagamento(info);
+
+    // 2) se a Stripe trouxe o telefone, avisa o CLIENTE direto (sem chute)
+    if (info.phone) {
+      await enviarBotBot(info.phone,
+        "✅ *Pagamento confirmado!* 🎉\n\n" +
+        "Recebemos seu pagamento e seu acesso já está liberado. É só abrir o app e aproveitar! 🍿\n\n" +
+        "Qualquer dúvida, digite *HUMANO*. 👤");
+    }
+
+    registrarPagamento(info);
+  }
+
+  return res.json({ received: true });
+}
+app.post("/stripe", handleStripe);
 
 app.get("/debug", (_req, res) => {
   texto(res,
